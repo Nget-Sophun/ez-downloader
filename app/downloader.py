@@ -250,29 +250,31 @@ class Downloader:
                 except Exception as e:
                     logger.warning(f"Error fetching audio for slideshow video: {e}")
 
-            # 3. Build FFmpeg command for 1080x1920 vertical video
+            # 3. Build FFmpeg command for 720x1280 HD vertical video (memory-efficient for cloud hosting)
             output_mp4 = os.path.join(tmpdir, "output.mp4")
-            scale_filter = "scale='if(gt(a,9/16),1080,-2)':'if(gt(a,9/16),-2,1920)',pad=1080:1920:(1080-iw)/2:(1920-ih)/2:black"
+            scale_filter = "scale='if(gt(a,9/16),720,-2)':'if(gt(a,9/16),-2,1280)',pad=720:1280:(720-iw)/2:(1280-ih)/2:black"
 
             if len(valid_img_paths) == 1:
                 # Single photo: loop image for audio duration (or max 30s)
                 cmd = [
                     ffmpeg_exe, "-y",
+                    "-threads", "2",
                     "-loop", "1",
                     "-i", valid_img_paths[0]
                 ]
                 if audio_path:
                     cmd.extend(["-i", audio_path])
                 else:
+                    # Generate silent audio
                     cmd.extend(["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"])
 
                 cmd.extend([
                     "-c:v", "libx264",
-                    "-preset", "veryfast",
-                    "-crf", "22",
+                    "-preset", "ultrafast",
+                    "-crf", "24",
                     "-tune", "stillimage",
                     "-c:a", "aac",
-                    "-b:a", "192k",
+                    "-b:a", "128k",
                     "-pix_fmt", "yuv420p",
                     "-vf", scale_filter,
                     "-shortest",
@@ -290,6 +292,7 @@ class Downloader:
 
                 cmd = [
                     ffmpeg_exe, "-y",
+                    "-threads", "2",
                     "-f", "concat",
                     "-safe", "0",
                     "-i", concat_file
@@ -304,10 +307,10 @@ class Downloader:
 
                 cmd.extend([
                     "-c:v", "libx264",
-                    "-preset", "veryfast",
-                    "-crf", "22",
+                    "-preset", "ultrafast",
+                    "-crf", "24",
                     "-c:a", "aac",
-                    "-b:a", "192k",
+                    "-b:a", "128k",
                     "-pix_fmt", "yuv420p",
                     "-vf", scale_filter,
                     "-shortest",
