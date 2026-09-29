@@ -12,7 +12,7 @@ import logging
 from typing import Optional, List
 from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, FileResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -160,6 +160,7 @@ async def analyze_url(req: AnalyzeRequest):
 
 
 @app.get("/api/download")
+@app.get("/api/download/stream")
 async def download_file(
     url: str = Query(..., description="Remote media URL"),
     filename: str = Query("download.mp4", description="Saved filename"),
@@ -274,10 +275,12 @@ async def stream_zip_by_token(token: str = Query(...)):
         zip_buf = downloader.create_images_zip(entry["images"], entry["title"], referer=entry.get("referer"))
         safe_title = sanitize_filename(entry["title"] or "photo_album", max_len=50)
         zip_filename = f"{safe_title}_photos.zip"
+        raw_zip = zip_buf.getvalue()
         headers = {
-            "Content-Disposition": make_content_disposition(zip_filename)
+            "Content-Disposition": make_content_disposition(zip_filename),
+            "Content-Length": str(len(raw_zip))
         }
-        return StreamingResponse(zip_buf, media_type="application/zip", headers=headers)
+        return Response(content=raw_zip, media_type="application/zip", headers=headers)
     except Exception as e:
         logger.error(f"ZIP streaming error: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate ZIP: {e}")
@@ -326,10 +329,13 @@ def stream_slideshow_by_token(token: str = Query(...)):
         )
         safe_title = sanitize_filename(entry.get("title", "slideshow") or "photo_slideshow", max_len=50)
         filename = f"{safe_title}_slideshow.mp4"
+        raw_video = video_buf.getvalue()
         headers = {
-            "Content-Disposition": make_content_disposition(filename)
+            "Content-Disposition": make_content_disposition(filename),
+            "Content-Length": str(len(raw_video)),
+            "Accept-Ranges": "bytes"
         }
-        return StreamingResponse(video_buf, media_type="video/mp4", headers=headers)
+        return Response(content=raw_video, media_type="video/mp4", headers=headers)
     except Exception as e:
         logger.error(f"Slideshow video creation error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to generate slideshow video: {e}")

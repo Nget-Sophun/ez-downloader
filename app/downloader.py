@@ -214,7 +214,10 @@ class Downloader:
             def fetch_single_img(idx: int, u: str):
                 try:
                     headers = self.get_headers(referer=referer, target_url=u)
-                    r = requests.get(u, headers=headers, impersonate="chrome124", timeout=20)
+                    try:
+                        r = requests.get(u, headers=headers, impersonate="chrome124", timeout=15)
+                    except Exception:
+                        r = requests.get(u, headers=headers, timeout=15)
                     if r.status_code == 200:
                         path = os.path.join(tmpdir, f"img_{idx:03d}.jpg")
                         with open(path, "wb") as f:
@@ -242,7 +245,10 @@ class Downloader:
             if audio_url:
                 try:
                     audio_headers = self.get_headers(referer=referer, target_url=audio_url)
-                    ar = requests.get(audio_url, headers=audio_headers, impersonate="chrome124", timeout=25)
+                    try:
+                        ar = requests.get(audio_url, headers=audio_headers, impersonate="chrome124", timeout=15)
+                    except Exception:
+                        ar = requests.get(audio_url, headers=audio_headers, timeout=15)
                     if ar.status_code == 200 and len(ar.content) > 500:
                         audio_path = os.path.join(tmpdir, "audio.mp3")
                         with open(audio_path, "wb") as f:
@@ -258,18 +264,16 @@ class Downloader:
                 # Single photo: loop image for audio duration (capped to 15s for instant performance)
                 clip_duration = min(15.0, max_duration)
                 cmd = [
-                    ffmpeg_exe, "-y",
+                    ffmpeg_exe, "-y", "-nostdin",
                     "-threads", "2",
                     "-loop", "1",
-                    "-t", str(clip_duration),
                     "-r", "20",
                     "-i", valid_img_paths[0]
                 ]
                 if audio_path:
-                    cmd.extend(["-t", str(clip_duration), "-i", audio_path])
+                    cmd.extend(["-i", audio_path])
                 else:
-                    # Generate silent audio
-                    cmd.extend(["-f", "lavfi", "-t", str(clip_duration), "-i", "anullsrc=r=44100:cl=stereo"])
+                    cmd.extend(["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"])
 
                 cmd.extend([
                     "-c:v", "libx264",
@@ -297,16 +301,16 @@ class Downloader:
                 clip_duration = min(total_slides_duration, max_duration, 30.0)
 
                 cmd = [
-                    ffmpeg_exe, "-y",
+                    ffmpeg_exe, "-y", "-nostdin",
                     "-threads", "2",
                     "-f", "concat",
                     "-safe", "0",
                     "-i", concat_file
                 ]
                 if audio_path:
-                    cmd.extend(["-t", str(clip_duration), "-i", audio_path])
+                    cmd.extend(["-i", audio_path])
                 else:
-                    cmd.extend(["-f", "lavfi", "-t", str(clip_duration), "-i", "anullsrc=r=44100:cl=stereo"])
+                    cmd.extend(["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"])
 
                 cmd.extend([
                     "-c:v", "libx264",
@@ -321,7 +325,13 @@ class Downloader:
                     output_mp4
                 ])
 
-            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            proc = subprocess.run(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=35
+            )
             if proc.returncode != 0 or not os.path.exists(output_mp4):
                 err_msg = proc.stderr.decode(errors="ignore") if proc.stderr else "Unknown ffmpeg error"
                 logger.error(f"FFmpeg render error: {err_msg}")
