@@ -198,6 +198,29 @@ async def send_media_to_chat(
                     )
             except Exception as e:
                 logger.warning(f"Failed to send telegram audio: {e}")
+
+        # Send Photo with Song (MP4 Video Slideshow)
+        try:
+            video_buf = downloader.create_slideshow_video(
+                images_urls=media.images,
+                audio_url=media.music.play_url if media.music else None,
+                title=title_text
+            )
+            video_buf.name = f"{sanitize_filename(title_text)}_slideshow.mp4"
+            await bot.send_video(
+                chat_id=chat_id,
+                video=video_buf,
+                caption=(
+                    f"🎬 <b>Photo with Song (MP4 Video)</b>\n"
+                    f"{caption_header}\n"
+                    f"✨ <i>Created from {len(media.images)} photo(s) + soundtrack</i>"
+                ),
+                parse_mode=constants.ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(buttons) if buttons else None
+            )
+        except Exception as e:
+            logger.warning(f"Could not generate slideshow video for Telegram: {e}")
+
         return
 
     # 2. VIDEO MODE

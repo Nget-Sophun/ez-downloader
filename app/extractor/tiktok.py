@@ -228,8 +228,17 @@ class TikTokExtractor:
                     "share_count": d.get("share_count", 0),
                     "play_count": d.get("play_count", 0)
                 }
-
                 is_photo = bool(images)
+                if is_photo:
+                    # In photo mode, TikWM frequently puts audio streams in hdplay/play
+                    def is_real_video(u: str) -> bool:
+                        if not u:
+                            return False
+                        low = u.lower()
+                        if "mime_type=audio_mpeg" in low or "ies-music" in low or "/video/music/" in low:
+                            return False
+                        return True
+                    videos = [v for v in videos if is_real_video(v.url)]
 
                 return MediaResult(
                     platform="tiktok",

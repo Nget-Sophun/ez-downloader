@@ -185,3 +185,145 @@ class Downloader:
                 total_saved += f.result()
 
         return target_dir, total_saved
+
+    def create_slideshow_video(
+        self,
+        images_urls: List[str],
+        audio_url: Optional[str] = None,
+        title: str = "slideshow",
+        referer: Optional[str] = None,
+        duration_per_image: float = 3.0,
+        max_duration: float = 60.0
+    ) -> io.BytesIO:
+        """Render an MP4 vertical slideshow video (1080x1920) combining photo(s) and background audio using FFmpeg."""
+        import tempfile
+        import subprocess
+
+        try:
+            import imageio_ffmpeg
+            ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            import shutil
+            ffmpeg_exe = shutil.which("ffmpeg")
+
+        if not ffmpeg_exe or not os.path.exists(ffmpeg_exe):
+            raise RuntimeError("FFmpeg is not available to render slideshow videos.")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # 1. Download images concurrently
+            def fetch_single_img(idx: int, u: str):
+                try:
+                    headers = self.get_headers(referer=referer, target_url=u)
+                    r = requests.get(u, headers=headers, impersonate="chrome124", timeout=20)
+                    if r.status_code == 200:
+                        path = os.path.join(tmpdir, f"img_{idx:03d}.jpg")
+                        with open(path, "wb") as f:
+                            f.write(r.content)
+                        return idx, path
+                except Exception as e:
+                    logger.warning(f"Error fetching image {idx} for video: {e}")
+                return idx, None
+
+            results = []
+            with ThreadPoolExecutor(max_workers=min(6, max(len(images_urls), 1))) as pool:
+                futures = {pool.submit(fetch_single_img, i, u): i for i, u in enumerate(images_urls)}
+                for fut in as_completed(futures):
+                    res = fut.result()
+                    if res[1]:
+                        results.append(res)
+
+            results.sort(key=lambda x: x[0])
+            valid_img_paths = [r[1] for r in results]
+            if not valid_img_paths:
+                raise RuntimeError("Failed to download images for slideshow video generation.")
+
+            # 2. Download audio track if available
+            audio_path = None
+            if audio_url:
+                try:
+                    audio_headers = self.get_headers(referer=referer, target_url=audio_url)
+                    ar = requests.get(audio_url, headers=audio_headers, impersonate="chrome124", timeout=25)
+                    if ar.status_code == 200 and len(ar.content) > 500:
+                        audio_path = os.path.join(tmpdir, "audio.mp3")
+                        with open(audio_path, "wb") as f:
+                            f.write(ar.content)
+                except Exception as e:
+                    logger.warning(f"Error fetching audio for slideshow video: {e}")
+
+            # 3. Build FFmpeg command for 1080x1920 vertical video
+            output_mp4 = os.path.join(tmpdir, "output.mp4")
+            scale_filter = "scale='if(gt(a,9/16),1080,-2)':'if(gt(a,9/16),-2,1920)',pad=1080:1920:(1080-iw)/2:(1920-ih)/2:black"
+
+            if len(valid_img_paths) == 1:
+                # Single photo: loop image for audio duration (or max 30s)
+                cmd = [
+                    ffmpeg_exe, "-y",
+                    "-loop", "1",
+                    "-i", valid_img_paths[0]
+                ]
+                if audio_path:
+                    cmd.extend(["-i", audio_path])
+                else:
+                    cmd.extend(["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"])
+
+                cmd.extend([
+                    "-c:v", "libx264",
+                    "-preset", "veryfast",
+                    "-crf", "22",
+                    "-tune", "stillimage",
+                    "-c:a", "aac",
+                    "-b:a", "192k",
+                    "-pix_fmt", "yuv420p",
+                    "-vf", scale_filter,
+                    "-shortest",
+                    "-t", str(min(30.0, max_duration)),
+                    output_mp4
+                ])
+            else:
+                # Multiple photos: display sequentially
+                concat_file = os.path.join(tmpdir, "input.txt")
+                with open(concat_file, "w", encoding="utf-8") as f:
+                    for p in valid_img_paths:
+                        f.write(f"file '{p.replace(os.sep, '/')}'\n")
+                        f.write(f"duration {duration_per_image}\n")
+                    f.write(f"file '{valid_img_paths[-1].replace(os.sep, '/')}'\n")
+
+                cmd = [
+                    ffmpeg_exe, "-y",
+                    "-f", "concat",
+                    "-safe", "0",
+                    "-i", concat_file
+                ]
+                if audio_path:
+                    cmd.extend(["-i", audio_path])
+                else:
+                    cmd.extend(["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"])
+
+                total_slides_duration = len(valid_img_paths) * duration_per_image
+                clip_duration = min(total_slides_duration, max_duration)
+
+                cmd.extend([
+                    "-c:v", "libx264",
+                    "-preset", "veryfast",
+                    "-crf", "22",
+                    "-c:a", "aac",
+                    "-b:a", "192k",
+                    "-pix_fmt", "yuv420p",
+                    "-vf", scale_filter,
+                    "-shortest",
+                    "-t", str(clip_duration),
+                    output_mp4
+                ])
+
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if proc.returncode != 0 or not os.path.exists(output_mp4):
+                err_msg = proc.stderr.decode(errors="ignore") if proc.stderr else "Unknown ffmpeg error"
+                logger.error(f"FFmpeg render error: {err_msg}")
+                raise RuntimeError(f"FFmpeg failed to create slideshow video: {err_msg[:200]}")
+
+            buf = io.BytesIO()
+            with open(output_mp4, "rb") as f:
+                buf.write(f.read())
+            buf.seek(0)
+            return buf
+

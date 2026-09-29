@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 import os
+import re
 import time
 import uuid
 import subprocess
@@ -22,8 +23,20 @@ from .downloader import Downloader, sanitize_filename, DEFAULT_DOWNLOAD_DIR
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ez_downloader.server")
 
+
+def make_content_disposition(filename: str) -> str:
+    """Create a standards-compliant Content-Disposition header with ASCII fallback + UTF-8 filename*."""
+    ascii_name = re.sub(r'[^a-zA-Z0-9._\- ]', '_', filename).strip()
+    if not ascii_name:
+        ascii_name = "download_media"
+    encoded_name = urllib.parse.quote(filename, encoding="utf-8")
+    return f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{encoded_name}'
+
+
 # In-memory cache for ZIP generation tokens: token -> { images, title, referer, expires }
 zip_token_cache: dict[str, dict] = {}
+# In-memory cache for slideshow MP4 video generation: token -> { images, audio_url, title, referer, expires }
+slideshow_token_cache: dict[str, dict] = {}
 
 
 @asynccontextmanager
@@ -104,6 +117,13 @@ class ZipPrepareRequest(BaseModel):
     referer: Optional[str] = None
 
 
+class SlideshowPrepareRequest(BaseModel):
+    images: List[str]
+    audio_url: Optional[str] = None
+    title: str = "slideshow"
+    referer: Optional[str] = None
+
+
 class TelegramSendRequest(BaseModel):
     chat_id: int | str
     url: Optional[str] = None
@@ -167,7 +187,7 @@ async def download_file(
     try:
         stream = downloader.stream_remote_file(url, referer=referer)
         headers = {
-            "Content-Disposition": f'attachment; filename="{safe_name}"; filename*=UTF-8\'\'{encoded_filename}',
+            "Content-Disposition": make_content_disposition(safe_name),
             "Access-Control-Expose-Headers": "Content-Disposition"
         }
         return StreamingResponse(stream, media_type=content_type, headers=headers)
@@ -207,10 +227,9 @@ async def download_images_zip(req: ZipRequest):
         zip_buf = downloader.create_images_zip(req.images, req.title, referer=req.referer)
         safe_title = sanitize_filename(req.title or "photo_album", max_len=50)
         zip_filename = f"{safe_title}_images.zip"
-        encoded_filename = urllib.parse.quote(zip_filename)
 
         headers = {
-            "Content-Disposition": f'attachment; filename="{zip_filename}"; filename*=UTF-8\'\'{encoded_filename}'
+            "Content-Disposition": make_content_disposition(zip_filename)
         }
         return StreamingResponse(zip_buf, media_type="application/zip", headers=headers)
     except Exception as e:
@@ -255,14 +274,65 @@ async def stream_zip_by_token(token: str = Query(...)):
         zip_buf = downloader.create_images_zip(entry["images"], entry["title"], referer=entry.get("referer"))
         safe_title = sanitize_filename(entry["title"] or "photo_album", max_len=50)
         zip_filename = f"{safe_title}_photos.zip"
-        encoded_filename = urllib.parse.quote(zip_filename)
         headers = {
-            "Content-Disposition": f'attachment; filename="{zip_filename}"; filename*=UTF-8\'\'{encoded_filename}'
+            "Content-Disposition": make_content_disposition(zip_filename)
         }
         return StreamingResponse(zip_buf, media_type="application/zip", headers=headers)
     except Exception as e:
         logger.error(f"ZIP streaming error: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate ZIP: {e}")
+
+
+@app.post("/api/download/slideshow-prepare")
+async def prepare_slideshow_download(req: SlideshowPrepareRequest):
+    """Store slideshow video parameters in a temporary token for direct download."""
+    if not req.images:
+        raise HTTPException(status_code=400, detail="No images provided for slideshow video.")
+
+    token = uuid.uuid4().hex[:12]
+    now = time.time()
+    # Prune expired tokens older than 15 mins
+    expired = [k for k, v in slideshow_token_cache.items() if v.get("expires", 0) < now]
+    for k in expired:
+        slideshow_token_cache.pop(k, None)
+
+    slideshow_token_cache[token] = {
+        "images": req.images,
+        "audio_url": req.audio_url,
+        "title": req.title,
+        "referer": req.referer,
+        "expires": now + 900
+    }
+    return {
+        "success": True,
+        "token": token,
+        "download_url": f"/api/download/slideshow-stream?token={token}"
+    }
+
+
+@app.get("/api/download/slideshow-stream")
+async def stream_slideshow_by_token(token: str = Query(...)):
+    """Render and stream MP4 slideshow video combining photo(s) and background audio."""
+    entry = slideshow_token_cache.get(token)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Slideshow token expired or not found. Please try again.")
+
+    try:
+        video_buf = downloader.create_slideshow_video(
+            images_urls=entry["images"],
+            audio_url=entry.get("audio_url"),
+            title=entry.get("title", "slideshow"),
+            referer=entry.get("referer")
+        )
+        safe_title = sanitize_filename(entry.get("title", "slideshow") or "photo_slideshow", max_len=50)
+        filename = f"{safe_title}_slideshow.mp4"
+        headers = {
+            "Content-Disposition": make_content_disposition(filename)
+        }
+        return StreamingResponse(video_buf, media_type="video/mp4", headers=headers)
+    except Exception as e:
+        logger.error(f"Slideshow video creation error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to generate slideshow video: {e}")
 
 
 @app.post("/api/telegram/send-to-chat")

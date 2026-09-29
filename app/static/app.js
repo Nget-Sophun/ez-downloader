@@ -50,6 +50,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const videoOptionsGroup = document.getElementById("videoOptionsGroup");
   const videoButtons = document.getElementById("videoButtons");
   const photoOptionsGroup = document.getElementById("photoOptionsGroup");
+  const btnDownloadSlideshowVideo = document.getElementById("btnDownloadSlideshowVideo");
   const btnCarouselQuickDownload = document.getElementById("btnCarouselQuickDownload");
   const btnDownloadCurrentPhoto = document.getElementById("btnDownloadCurrentPhoto");
   const labelCurrentPhoto = document.getElementById("labelCurrentPhoto");
@@ -491,6 +492,13 @@ document.addEventListener("DOMContentLoaded", () => {
       selectSlide(newIdx, images);
     };
 
+    // Download Photo with Song (MP4 Video Slideshow)
+    if (btnDownloadSlideshowVideo) {
+      btnDownloadSlideshowVideo.onclick = () => {
+        downloadSlideshowVideo(images, currentMedia?.music?.play_url, currentMedia?.title || "slideshow");
+      };
+    }
+
     // Quick download icon on top of carousel
     if (btnCarouselQuickDownload) {
       btnCarouselQuickDownload.onclick = () => downloadSinglePhoto(currentSlideIndex, images);
@@ -597,6 +605,52 @@ document.addEventListener("DOMContentLoaded", () => {
       showToast("Photos ZIP downloading...", "success");
     } catch (err) {
       showToast("Error creating ZIP: " + err.message, "error");
+    }
+  }
+
+  // Download Photo with Song (MP4 Slideshow Video)
+  async function downloadSlideshowVideo(images, audioUrl, title) {
+    if (!images || images.length === 0) {
+      showToast("No photos found to create video.", "error");
+      return;
+    }
+
+    showToast("Rendering Photo with Song video (takes ~3-5s)...", "info");
+    try {
+      const res = await fetch("/api/download/slideshow-prepare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          images: images,
+          audio_url: audioUrl || null,
+          title: title
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.detail || "Failed to prepare slideshow video.");
+      }
+
+      const fullUrl = window.location.origin + data.download_url;
+
+      // In Telegram WebApp: delegate to system browser
+      if (window.Telegram?.WebApp && typeof window.Telegram.WebApp.openLink === "function") {
+        showToast("Opening slideshow video in your device browser...", "info");
+        window.Telegram.WebApp.openLink(fullUrl);
+        return;
+      }
+
+      // Standard browser: trigger direct download
+      const a = document.createElement("a");
+      a.href = data.download_url;
+      a.download = `${cleanFilename(title)}_slideshow.mp4`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      showToast("Photo with Song video downloading!", "success");
+    } catch (err) {
+      showToast("Error generating video: " + err.message, "error");
     }
   }
 
