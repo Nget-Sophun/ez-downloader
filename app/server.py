@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 import os
+import time
+import uuid
 import subprocess
 import urllib.parse
 import logging
@@ -20,6 +22,9 @@ from .downloader import Downloader, sanitize_filename, DEFAULT_DOWNLOAD_DIR
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("ez_downloader.server")
 
+# In-memory cache for ZIP generation tokens: token -> { images, title, referer, expires }
+zip_token_cache: dict[str, dict] = {}
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -34,6 +39,7 @@ async def lifespan(app: FastAPI):
             await bot_app.initialize()
             await bot_app.start()
             await bot_app.updater.start_polling()
+            app.state.bot_app = bot_app
             logger.info("Telegram Bot is running and listening for messages!")
         except Exception as e:
             logger.warning(f"Could not start embedded Telegram Bot: {e}")
@@ -53,7 +59,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="EZ Downloader - TikTok & Douyin",
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan
 )
 
@@ -90,6 +96,17 @@ class ZipRequest(BaseModel):
     images: List[str]
     title: str
     referer: Optional[str] = None
+
+
+class ZipPrepareRequest(BaseModel):
+    images: List[str]
+    title: str
+    referer: Optional[str] = None
+
+
+class TelegramSendRequest(BaseModel):
+    chat_id: int | str
+    url: Optional[str] = None
 
 
 class LocalAlbumRequest(BaseModel):
@@ -199,6 +216,103 @@ async def download_images_zip(req: ZipRequest):
     except Exception as e:
         logger.error(f"ZIP creation error: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to create ZIP: {e}")
+
+
+@app.post("/api/download/zip-prepare")
+async def prepare_zip_download(req: ZipPrepareRequest):
+    """Store image URLs in a temporary token to allow direct browser/Telegram download."""
+    if not req.images:
+        raise HTTPException(status_code=400, detail="No images provided for zip archive.")
+
+    token = uuid.uuid4().hex[:12]
+    now = time.time()
+    # Prune expired tokens older than 15 mins
+    expired = [k for k, v in zip_token_cache.items() if v.get("expires", 0) < now]
+    for k in expired:
+        zip_token_cache.pop(k, None)
+
+    zip_token_cache[token] = {
+        "images": req.images,
+        "title": req.title,
+        "referer": req.referer,
+        "expires": now + 900
+    }
+    return {
+        "success": True,
+        "token": token,
+        "download_url": f"/api/download/zip-stream?token={token}"
+    }
+
+
+@app.get("/api/download/zip-stream")
+async def stream_zip_by_token(token: str = Query(...)):
+    """Stream prepared ZIP archive directly to user's browser or Telegram external browser."""
+    entry = zip_token_cache.get(token)
+    if not entry:
+        raise HTTPException(status_code=404, detail="ZIP download expired or token not found. Please try again.")
+
+    try:
+        zip_buf = downloader.create_images_zip(entry["images"], entry["title"], referer=entry.get("referer"))
+        safe_title = sanitize_filename(entry["title"] or "photo_album", max_len=50)
+        zip_filename = f"{safe_title}_photos.zip"
+        encoded_filename = urllib.parse.quote(zip_filename)
+        headers = {
+            "Content-Disposition": f'attachment; filename="{zip_filename}"; filename*=UTF-8\'\'{encoded_filename}'
+        }
+        return StreamingResponse(zip_buf, media_type="application/zip", headers=headers)
+    except Exception as e:
+        logger.error(f"ZIP streaming error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate ZIP: {e}")
+
+
+@app.post("/api/telegram/send-to-chat")
+async def send_to_telegram_chat(req: TelegramSendRequest):
+    """Forward analyzed media directly to the user's Telegram chat."""
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token or token == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
+        raise HTTPException(
+            status_code=400,
+            detail="Telegram Bot Token is not configured on Render. Please add TELEGRAM_BOT_TOKEN to your Render Environment variables."
+        )
+
+    if not req.url or not req.url.strip():
+        raise HTTPException(status_code=400, detail="Please provide a valid media URL.")
+
+    try:
+        media_obj = extractor.fetch(req.url.strip())
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to extract media: {e}")
+
+    # Use running bot_app if available, or create a temporary Telegram Bot instance
+    from telegram import Bot
+    from bot import send_media_to_chat
+
+    bot_app = getattr(app.state, "bot_app", None)
+    try:
+        if bot_app and bot_app.bot:
+            await send_media_to_chat(bot_app.bot, req.chat_id, media_obj, target_url=req.url)
+        else:
+            async with Bot(token=token) as bot:
+                await send_media_to_chat(bot, req.chat_id, media_obj, target_url=req.url)
+
+        return {"success": True, "message": "Media sent successfully to your Telegram chat!"}
+    except Exception as e:
+        logger.error(f"Error sending media to Telegram chat {req.chat_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to send to Telegram chat: {e}")
+
+
+@app.get("/api/status")
+async def get_system_status():
+    """Health and status check showing bot configuration and deployment settings."""
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    has_token = bool(token and token != "YOUR_TELEGRAM_BOT_TOKEN_HERE")
+    webapp_url = os.getenv("WEBAPP_URL", "https://ez-downloader.onrender.com").strip()
+    return {
+        "status": "online",
+        "telegram_bot_configured": has_token,
+        "webapp_url": webapp_url,
+        "version": "1.1.0"
+    }
 
 
 @app.post("/api/download/local-album")

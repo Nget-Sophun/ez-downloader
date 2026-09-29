@@ -98,17 +98,28 @@ document.addEventListener("DOMContentLoaded", () => {
   // Telegram WebApp Integration
   const tg = window.Telegram?.WebApp;
   const tgBadge = document.getElementById("tgBadge");
+  const telegramActionGroup = document.getElementById("telegramActionGroup");
+  const btnSendToChat = document.getElementById("btnSendToChat");
+  const labelSendToChat = document.getElementById("labelSendToChat");
+  let tgUserId = null;
 
   if (tg) {
     try {
       tg.ready();
       tg.expand();
-      if (tg.initData && tgBadge) {
-        tgBadge.classList.remove("hidden");
+      if (tgBadge) tgBadge.classList.remove("hidden");
+
+      if (tg.initDataUnsafe?.user?.id) {
+        tgUserId = tg.initDataUnsafe.user.id;
+        if (telegramActionGroup) telegramActionGroup.classList.remove("hidden");
       }
-      // Check for incoming URL parameter (e.g. ?url=... or ?link=...)
+
+      // Check incoming URL from query parameters (?url=... or ?link=...) or start_param
       const urlParams = new URLSearchParams(window.location.search);
-      const startUrl = urlParams.get("url") || urlParams.get("link");
+      let startUrl = urlParams.get("url") || urlParams.get("link");
+      if (!startUrl && tg.initDataUnsafe?.start_param) {
+        startUrl = tg.initDataUnsafe.start_param;
+      }
       if (startUrl) {
         urlInput.value = decodeURIComponent(startUrl);
         btnClear.classList.remove("hidden");
@@ -119,6 +130,57 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (e) {
       console.warn("Telegram WebApp initialization error:", e);
     }
+  }
+
+  // Handle Telegram Send to Chat button
+  if (btnSendToChat) {
+    btnSendToChat.addEventListener("click", async () => {
+      const activeUrl = urlInput.value.trim();
+      if (!activeUrl) {
+        showToast("Please enter a TikTok or Douyin link first.", "warning");
+        return;
+      }
+
+      const userIdToSend = tgUserId || tg?.initDataUnsafe?.user?.id;
+      if (!userIdToSend) {
+        showToast("Telegram user ID not detected. Please open within Telegram.", "warning");
+        return;
+      }
+
+      const originalBtnText = labelSendToChat ? labelSendToChat.textContent : "Send to Chat";
+      if (labelSendToChat) labelSendToChat.textContent = "Sending to your Telegram chat...";
+      btnSendToChat.disabled = true;
+      showToast("Sending media directly to your Telegram chat...", "info");
+
+      try {
+        const res = await fetch("/api/telegram/send-to-chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: userIdToSend,
+            url: activeUrl
+          })
+        });
+
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          throw new Error(data.detail || data.error || "Failed to send to Telegram chat.");
+        }
+
+        showToast("Media sent to your Telegram chat! Check your messages.", "success");
+        if (tg?.HapticFeedback) {
+          tg.HapticFeedback.notificationOccurred("success");
+        }
+      } catch (err) {
+        showToast("Telegram Chat: " + err.message, "error");
+        if (tg?.HapticFeedback) {
+          tg.HapticFeedback.notificationOccurred("error");
+        }
+      } finally {
+        if (labelSendToChat) labelSendToChat.textContent = originalBtnText;
+        btnSendToChat.disabled = false;
+      }
+    });
   }
 
   // Load download history
@@ -256,6 +318,10 @@ document.addEventListener("DOMContentLoaded", () => {
     statShares.textContent = formatNumber(media.stats.play_count || 0);
 
     // Media Preview Handling
+    if (telegramActionGroup && (tgUserId || window.Telegram?.WebApp?.initDataUnsafe?.user?.id)) {
+      telegramActionGroup.classList.remove("hidden");
+    }
+
     if (media.type === "photo" && media.images && media.images.length > 0) {
       // Photo Mode
       videoPreviewWrapper.classList.add("hidden");
@@ -479,9 +545,19 @@ document.addEventListener("DOMContentLoaded", () => {
     showToast(`Starting download: ${filename}`, "info");
 
     const dlUrl = `/api/download?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(filename)}`;
+    const fullUrl = window.location.origin + dlUrl;
+
+    // Telegram in-app WebView suppresses standard <a> downloads; delegate to system browser
+    if (window.Telegram?.WebApp && typeof window.Telegram.WebApp.openLink === "function") {
+      showToast("Opening download in your device browser...", "info");
+      window.Telegram.WebApp.openLink(fullUrl);
+      return;
+    }
+
     const a = document.createElement("a");
     a.href = dlUrl;
     a.download = filename;
+    a.target = "_blank";
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -489,28 +565,36 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Download Image Album ZIP
   async function downloadZipArchive(images, title) {
-    showToast(`Compiling ZIP with ${images.length} photos...`, "info");
+    showToast(`Preparing ZIP with ${images.length} photos...`, "info");
     try {
-      const res = await fetch("/api/download/zip", {
+      const res = await fetch("/api/download/zip-prepare", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ images, title })
       });
 
-      if (!res.ok) {
-        throw new Error("Failed to compile ZIP archive.");
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.detail || "Failed to prepare ZIP archive.");
       }
 
-      const blob = await res.blob();
-      const zipUrl = window.URL.createObjectURL(blob);
+      const fullZipUrl = window.location.origin + data.download_url;
+
+      // In Telegram WebApp: delegate to system browser
+      if (window.Telegram?.WebApp && typeof window.Telegram.WebApp.openLink === "function") {
+        showToast("Opening ZIP download in your device browser...", "info");
+        window.Telegram.WebApp.openLink(fullZipUrl);
+        return;
+      }
+
+      // Standard browser: trigger direct download
       const a = document.createElement("a");
-      a.href = zipUrl;
+      a.href = data.download_url;
       a.download = `${cleanFilename(title)}_photos.zip`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      window.URL.revokeObjectURL(zipUrl);
-      showToast("Photos ZIP downloaded!", "success");
+      showToast("Photos ZIP downloading...", "success");
     } catch (err) {
       showToast("Error creating ZIP: " + err.message, "error");
     }

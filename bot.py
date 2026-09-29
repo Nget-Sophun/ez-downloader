@@ -9,6 +9,7 @@ import os
 import sys
 import io
 import re
+import urllib.parse
 import logging
 from typing import Optional, List
 from dotenv import load_dotenv
@@ -42,6 +43,7 @@ from telegram.ext import (
 )
 
 from app.extractor import UnifiedExtractor
+from app.extractor.base import MediaResult
 from app.downloader import Downloader, sanitize_filename
 from curl_cffi import requests
 
@@ -52,7 +54,7 @@ logging.basicConfig(
 logger = logging.getLogger("ez_downloader.bot")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-WEBAPP_URL = os.getenv("WEBAPP_URL", "http://127.0.0.1:5000").strip()
+WEBAPP_URL = os.getenv("WEBAPP_URL", "https://ez-downloader.onrender.com").strip()
 
 extractor = UnifiedExtractor()
 downloader = Downloader()
@@ -125,6 +127,144 @@ def extract_url_from_text(text: str) -> Optional[str]:
     return None
 
 
+async def send_media_to_chat(
+    bot,
+    chat_id: int | str,
+    media: MediaResult,
+    target_url: Optional[str] = None
+) -> None:
+    """Forward analyzed media (video or photo album + audio) directly to a Telegram chat."""
+    platform_label = "Douyin (抖音)" if media.platform == "douyin" else "TikTok"
+    author_name = media.author.nickname or "Creator"
+    title_text = media.title or "No title"
+    if len(title_text) > 100:
+        title_text = title_text[:97] + "..."
+
+    caption_header = (
+        f"🎬 <b>{platform_label}</b> | 👤 <b>{author_name}</b>\n"
+        f"📝 <i>{title_text}</i>\n"
+    )
+
+    buttons = []
+    if WEBAPP_URL and WEBAPP_URL.startswith("https://"):
+        launch_url = f"{WEBAPP_URL}?url={urllib.parse.quote(target_url)}" if target_url else WEBAPP_URL
+        buttons.append([
+            InlineKeyboardButton("🚀 Open in Web App", web_app=WebAppInfo(url=launch_url))
+        ])
+
+    # 1. PHOTO SLIDESHOW MODE
+    if media.type == "photo" and media.images:
+        headers = downloader.get_headers(target_url=media.images[0])
+        batch_size = 10
+        for start_idx in range(0, len(media.images), batch_size):
+            chunk = media.images[start_idx : start_idx + batch_size]
+            media_group = []
+            for i, img_url in enumerate(chunk):
+                try:
+                    r = requests.get(img_url, headers=headers, impersonate="chrome124", timeout=15)
+                    if r.status_code == 200:
+                        photo_file = io.BytesIO(r.content)
+                        photo_file.name = f"photo_{start_idx + i + 1}.jpg"
+                        caption = caption_header if (start_idx == 0 and i == 0) else None
+                        media_group.append(
+                            InputMediaPhoto(
+                                media=photo_file,
+                                caption=caption,
+                                parse_mode=constants.ParseMode.HTML if caption else None
+                            )
+                        )
+                except Exception as e:
+                    logger.warning(f"Error fetching photo for Telegram chat: {e}")
+
+            if media_group:
+                await bot.send_media_group(chat_id=chat_id, media=media_group)
+
+        # Send Soundtrack
+        if media.music and media.music.play_url:
+            try:
+                music_headers = downloader.get_headers(target_url=media.music.play_url)
+                mr = requests.get(media.music.play_url, headers=music_headers, impersonate="chrome124", timeout=20)
+                if mr.status_code == 200 and len(mr.content) > 500:
+                    audio_file = io.BytesIO(mr.content)
+                    audio_name = sanitize_filename(media.music.title or "audio") + ".mp3"
+                    audio_file.name = audio_name
+                    await bot.send_audio(
+                        chat_id=chat_id,
+                        audio=audio_file,
+                        title=media.music.title or "Background Music",
+                        performer=media.music.author or author_name,
+                        caption=f"🎵 <b>Slideshow Soundtrack:</b> {media.music.title or 'Original Audio'}",
+                        parse_mode=constants.ParseMode.HTML
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to send telegram audio: {e}")
+        return
+
+    # 2. VIDEO MODE
+    if media.videos:
+        best_vid = media.videos[0]
+        video_headers = downloader.get_headers(target_url=best_vid.url)
+        vr = requests.get(best_vid.url, headers=video_headers, impersonate="chrome124", timeout=40)
+
+        if vr.status_code == 200 and len(vr.content) > 1000:
+            video_size_mb = len(vr.content) / (1024 * 1024)
+            if video_size_mb < 49:
+                video_file = io.BytesIO(vr.content)
+                video_file.name = f"{sanitize_filename(title_text)}.mp4"
+                caption = (
+                    f"{caption_header}\n"
+                    f"📊 ❤️ {media.stats.get('digg_count', 0):,} | 💬 {media.stats.get('comment_count', 0):,}\n"
+                    f"✨ <i>Downloaded without watermark ({best_vid.quality})</i>"
+                )
+                await bot.send_video(
+                    chat_id=chat_id,
+                    video=video_file,
+                    caption=caption,
+                    parse_mode=constants.ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup(buttons) if buttons else None
+                )
+            else:
+                buttons.append([
+                    InlineKeyboardButton(f"📥 Download Video ({video_size_mb:.1f} MB)", url=best_vid.url)
+                ])
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=f"{caption_header}\n⚠️ Video is large ({video_size_mb:.1f}MB). Click below to download directly:",
+                    parse_mode=constants.ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup(buttons)
+                )
+        else:
+            buttons.append([
+                InlineKeyboardButton("📥 Download HD Video", url=best_vid.url)
+            ])
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"{caption_header}\nClick below to download:",
+                parse_mode=constants.ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+
+        # Send Audio track
+        if media.music and media.music.play_url:
+            try:
+                music_headers = downloader.get_headers(target_url=media.music.play_url)
+                mr = requests.get(media.music.play_url, headers=music_headers, impersonate="chrome124", timeout=20)
+                if mr.status_code == 200 and len(mr.content) > 500:
+                    audio_file = io.BytesIO(mr.content)
+                    audio_file.name = f"{sanitize_filename(media.music.title or 'audio')}.mp3"
+                    await bot.send_audio(
+                        chat_id=chat_id,
+                        audio=audio_file,
+                        title=media.music.title or "Original Audio",
+                        performer=media.music.author or author_name
+                    )
+            except Exception as e:
+                logger.debug(f"Audio send skipped: {e}")
+        return
+
+    raise RuntimeError("No downloadable video or photo content found.")
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming text messages and extract media links."""
     text = update.message.text
@@ -148,174 +288,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     try:
-        # Fetch media info via our UnifiedExtractor
         media = extractor.fetch(target_url)
-
-        platform_label = "Douyin (抖音)" if media.platform == "douyin" else "TikTok"
-        author_name = media.author.nickname or "Creator"
-        title_text = media.title or "No title"
-        if len(title_text) > 100:
-            title_text = title_text[:97] + "..."
-
-        caption_header = (
-            f"🎬 <b>{platform_label}</b> | 👤 <b>{author_name}</b>\n"
-            f"📝 <i>{title_text}</i>\n"
-        )
-
-        buttons = []
-        if WEBAPP_URL and WEBAPP_URL.startswith("https://"):
-            app_launch_url = f"{WEBAPP_URL}?url={urllib.parse.quote(target_url)}" if "?" not in WEBAPP_URL else f"{WEBAPP_URL}&url={urllib.parse.quote(target_url)}"
-            buttons.append([
-                InlineKeyboardButton("🚀 Open in Web App", web_app=WebAppInfo(url=app_launch_url))
-            ])
-
-        # ------------------------------------------------------------------
-        # PHOTO SLIDESHOW MODE
-        # ------------------------------------------------------------------
-        if media.type == "photo" and media.images:
-            await status_msg.edit_text(
-                f"📸 <b>Found Photo Album ({len(media.images)} photos)! Downloading & sending...</b>",
-                parse_mode=constants.ParseMode.HTML
-            )
-
-            # Send photos in batches of up to 10 (Telegram's send_media_group limit)
-            headers = downloader.get_headers(target_url=media.images[0])
-            batch_size = 10
-            for start_idx in range(0, len(media.images), batch_size):
-                chunk = media.images[start_idx : start_idx + batch_size]
-                media_group = []
-
-                for i, img_url in enumerate(chunk):
-                    try:
-                        r = requests.get(img_url, headers=headers, impersonate="chrome124", timeout=15)
-                        if r.status_code == 200:
-                            photo_file = io.BytesIO(r.content)
-                            photo_file.name = f"photo_{start_idx + i + 1}.jpg"
-                            
-                            # Add caption to the first photo of the first batch
-                            caption = caption_header if (start_idx == 0 and i == 0) else None
-                            media_group.append(
-                                InputMediaPhoto(
-                                    media=photo_file,
-                                    caption=caption,
-                                    parse_mode=constants.ParseMode.HTML if caption else None
-                                )
-                            )
-                    except Exception as e:
-                        logger.warning(f"Error fetching photo for telegram: {e}")
-
-                if media_group:
-                    await context.bot.send_media_group(
-                        chat_id=update.effective_chat.id,
-                        media=media_group
-                    )
-
-            # Send Background Music (MP3) if available
-            if media.music and media.music.play_url:
-                try:
-                    await update.effective_chat.send_chat_action(constants.ChatAction.UPLOAD_VOICE)
-                    music_headers = downloader.get_headers(target_url=media.music.play_url)
-                    mr = requests.get(media.music.play_url, headers=music_headers, impersonate="chrome124", timeout=20)
-                    if mr.status_code == 200:
-                        audio_file = io.BytesIO(mr.content)
-                        audio_name = sanitize_filename(media.music.title or "audio") + ".mp3"
-                        audio_file.name = audio_name
-                        await context.bot.send_audio(
-                            chat_id=update.effective_chat.id,
-                            audio=audio_file,
-                            title=media.music.title or "Background Music",
-                            performer=media.music.author or author_name,
-                            caption=f"🎵 <b>Slideshow Soundtrack:</b> {media.music.title or 'Original Audio'}",
-                            parse_mode=constants.ParseMode.HTML
-                        )
-                except Exception as e:
-                    logger.warning(f"Failed to send telegram audio: {e}")
-
-            await status_msg.delete()
-            return
-
-        # ------------------------------------------------------------------
-        # VIDEO MODE
-        # ------------------------------------------------------------------
-        if media.videos:
-            best_vid = media.videos[0]
-            await status_msg.edit_text(
-                f"🎬 <b>Downloading {best_vid.quality} No-Watermark Video...</b>",
-                parse_mode=constants.ParseMode.HTML
-            )
-
-            # Download video buffer to send directly to Telegram
-            video_headers = downloader.get_headers(target_url=best_vid.url)
-            vr = requests.get(best_vid.url, headers=video_headers, impersonate="chrome124", timeout=40)
-            
-            if vr.status_code == 200 and len(vr.content) > 1000:
-                video_size_mb = len(vr.content) / (1024 * 1024)
-                
-                # Telegram bot upload limit is 50MB
-                if video_size_mb < 49:
-                    video_file = io.BytesIO(vr.content)
-                    video_file.name = f"{sanitize_filename(title_text)}.mp4"
-                    
-                    caption = (
-                        f"{caption_header}\n"
-                        f"📊 ❤️ {media.stats.get('digg_count', 0):,} | 💬 {media.stats.get('comment_count', 0):,}\n"
-                        f"✨ <i>Downloaded without watermark ({best_vid.quality})</i>"
-                    )
-
-                    await update.effective_chat.send_chat_action(constants.ChatAction.UPLOAD_VIDEO)
-                    await context.bot.send_video(
-                        chat_id=update.effective_chat.id,
-                        video=video_file,
-                        caption=caption,
-                        parse_mode=constants.ParseMode.HTML,
-                        reply_markup=InlineKeyboardMarkup(buttons) if buttons else None
-                    )
-                else:
-                    # Video exceeds 50MB; provide direct link button
-                    buttons.append([
-                        InlineKeyboardButton(f"📥 Download Video ({video_size_mb:.1f} MB)", url=best_vid.url)
-                    ])
-                    await update.effective_chat.send_message(
-                        f"{caption_header}\n⚠️ Video is large ({video_size_mb:.1f}MB). Click below to download directly:",
-                        parse_mode=constants.ParseMode.HTML,
-                        reply_markup=InlineKeyboardMarkup(buttons)
-                    )
-            else:
-                # Direct link fallback
-                buttons.append([
-                    InlineKeyboardButton("📥 Download HD Video", url=best_vid.url)
-                ])
-                await update.effective_chat.send_message(
-                    f"{caption_header}\nClick below to download:",
-                    parse_mode=constants.ParseMode.HTML,
-                    reply_markup=InlineKeyboardMarkup(buttons)
-                )
-
-            # Also send audio if available
-            if media.music and media.music.play_url:
-                try:
-                    music_headers = downloader.get_headers(target_url=media.music.play_url)
-                    mr = requests.get(media.music.play_url, headers=music_headers, impersonate="chrome124", timeout=20)
-                    if mr.status_code == 200 and len(mr.content) > 500:
-                        audio_file = io.BytesIO(mr.content)
-                        audio_file.name = f"{sanitize_filename(media.music.title or 'audio')}.mp3"
-                        await context.bot.send_audio(
-                            chat_id=update.effective_chat.id,
-                            audio=audio_file,
-                            title=media.music.title or "Original Audio",
-                            performer=media.music.author or author_name
-                        )
-                except Exception as e:
-                    logger.debug(f"Audio send skipped: {e}")
-
-            await status_msg.delete()
-            return
-
-        await status_msg.edit_text(
-            "❌ No downloadable streams or images found for this link.",
-            parse_mode=constants.ParseMode.HTML
-        )
-
+        await status_msg.edit_text("⚡ <b>Downloading & sending media to chat...</b>", parse_mode=constants.ParseMode.HTML)
+        await send_media_to_chat(context.bot, update.effective_chat.id, media, target_url=target_url)
+        await status_msg.delete()
     except Exception as e:
         logger.error(f"Error handling Telegram link: {e}", exc_info=True)
         await status_msg.edit_text(

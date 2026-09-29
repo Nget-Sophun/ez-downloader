@@ -50,9 +50,14 @@ class Downloader:
     def stream_remote_file(self, url: str, referer: Optional[str] = None, chunk_size: int = 65536) -> Generator[bytes, None, None]:
         """Stream an external URL chunk by chunk to FastAPI StreamingResponse."""
         headers = self.get_headers(referer=referer, target_url=url)
-        # Using curl_cffi with browser impersonation to bypass TLS / CDN hotlink checks
-        res = requests.get(url, headers=headers, stream=True, impersonate="chrome124", timeout=30)
-        res.raise_for_status()
+        try:
+            res = requests.get(url, headers=headers, stream=True, impersonate="chrome124", timeout=30)
+            res.raise_for_status()
+        except Exception as e:
+            logger.warning(f"curl_cffi impersonate stream error, retrying without impersonate: {e}")
+            res = requests.get(url, headers=headers, stream=True, timeout=30)
+            res.raise_for_status()
+
         for chunk in res.iter_content(chunk_size=chunk_size):
             if chunk:
                 yield chunk
