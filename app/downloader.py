@@ -256,40 +256,40 @@ class Downloader:
                 except Exception as e:
                     logger.warning(f"Error fetching audio for slideshow video: {e}")
 
-            # 3. Build FFmpeg command for 720x1280 HD vertical video (memory-efficient for cloud hosting)
+            # 3. Build FFmpeg command for vertical slideshow MP4 (optimized for cloud micro-instances)
             output_mp4 = os.path.join(tmpdir, "output.mp4")
-            scale_filter = "scale='if(gt(a,9/16),720,-2)':'if(gt(a,9/16),-2,1280)',pad=720:1280:(720-iw)/2:(1280-ih)/2:black"
+            scale_filter = "scale=540:960:force_original_aspect_ratio=decrease,pad=540:960:(ow-iw)/2:(oh-ih)/2:black"
 
             if len(valid_img_paths) == 1:
-                # Single photo: loop image for audio duration (capped to 15s for instant performance)
+                # Single photo: 15s clip at 5 fps
                 clip_duration = min(15.0, max_duration)
                 cmd = [
                     ffmpeg_exe, "-y", "-nostdin",
-                    "-threads", "2",
+                    "-threads", "1",
                     "-loop", "1",
-                    "-r", "20",
+                    "-framerate", "5",
+                    "-t", str(clip_duration),
                     "-i", valid_img_paths[0]
                 ]
                 if audio_path:
-                    cmd.extend(["-i", audio_path])
+                    cmd.extend(["-ss", "0", "-t", str(clip_duration), "-i", audio_path])
                 else:
-                    cmd.extend(["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"])
+                    cmd.extend(["-f", "lavfi", "-t", str(clip_duration), "-i", "anullsrc=r=44100:cl=stereo"])
 
                 cmd.extend([
                     "-c:v", "libx264",
                     "-preset", "ultrafast",
-                    "-crf", "24",
-                    "-tune", "stillimage",
+                    "-crf", "26",
                     "-c:a", "aac",
                     "-b:a", "128k",
                     "-pix_fmt", "yuv420p",
                     "-vf", scale_filter,
-                    "-r", "20",
+                    "-r", "5",
                     "-t", str(clip_duration),
                     output_mp4
                 ])
             else:
-                # Multiple photos: display sequentially
+                # Multiple photos: display sequentially at 5 fps
                 concat_file = os.path.join(tmpdir, "input.txt")
                 with open(concat_file, "w", encoding="utf-8") as f:
                     for p in valid_img_paths:
@@ -302,25 +302,25 @@ class Downloader:
 
                 cmd = [
                     ffmpeg_exe, "-y", "-nostdin",
-                    "-threads", "2",
+                    "-threads", "1",
                     "-f", "concat",
                     "-safe", "0",
                     "-i", concat_file
                 ]
                 if audio_path:
-                    cmd.extend(["-i", audio_path])
+                    cmd.extend(["-ss", "0", "-t", str(clip_duration), "-i", audio_path])
                 else:
-                    cmd.extend(["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"])
+                    cmd.extend(["-f", "lavfi", "-t", str(clip_duration), "-i", "anullsrc=r=44100:cl=stereo"])
 
                 cmd.extend([
                     "-c:v", "libx264",
                     "-preset", "ultrafast",
-                    "-crf", "24",
+                    "-crf", "26",
                     "-c:a", "aac",
                     "-b:a", "128k",
                     "-pix_fmt", "yuv420p",
                     "-vf", scale_filter,
-                    "-r", "20",
+                    "-r", "5",
                     "-t", str(clip_duration),
                     output_mp4
                 ])
@@ -330,7 +330,7 @@ class Downloader:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                timeout=35
+                timeout=25
             )
             if proc.returncode != 0 or not os.path.exists(output_mp4):
                 err_msg = proc.stderr.decode(errors="ignore") if proc.stderr else "Unknown ffmpeg error"
