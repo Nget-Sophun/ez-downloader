@@ -1,0 +1,182 @@
+"""Download and streaming utility with sanitize, chunking, and zip support.
+"""
+
+from __future__ import annotations
+import os
+import re
+import io
+import zipfile
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Generator, Optional, List, Tuple
+from curl_cffi import requests
+
+logger = logging.getLogger("ez_downloader.downloader")
+
+DEFAULT_DOWNLOAD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "downloads"))
+
+
+def sanitize_filename(name: str, max_len: int = 80) -> str:
+    """Clean string to be valid across Windows and UNIX filesystem."""
+    clean = re.sub(r'[\\/*?:"<>|#\n\r\t]', "", name)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    if not clean:
+        clean = "media_download"
+    return clean[:max_len].strip()
+
+
+class Downloader:
+    def __init__(self, download_dir: str = DEFAULT_DOWNLOAD_DIR):
+        self.download_dir = download_dir
+        os.makedirs(self.download_dir, exist_ok=True)
+        self.ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+
+    def get_headers(self, referer: Optional[str] = None, target_url: Optional[str] = None) -> dict:
+        """Infer proper referer and anti-bot headers for the given CDN URL."""
+        headers = {"User-Agent": self.ua}
+        if referer:
+            headers["Referer"] = referer
+        elif target_url:
+            if "tikwm.com" in target_url:
+                headers["Referer"] = "https://www.tikwm.com/"
+            elif "ssstik.io" in target_url or "tikcdn.io" in target_url:
+                headers["Referer"] = "https://ssstik.io/"
+            elif any(d in target_url for d in ["tiktokcdn", "byteoversea", "ibytedtos", "tiktok.com"]):
+                headers["Referer"] = "https://www.tiktok.com/"
+            elif any(d in target_url for d in ["douyin", "snssdk", "zijieapi"]):
+                headers["Referer"] = "https://www.douyin.com/"
+        return headers
+
+    def stream_remote_file(self, url: str, referer: Optional[str] = None, chunk_size: int = 65536) -> Generator[bytes, None, None]:
+        """Stream an external URL chunk by chunk to FastAPI StreamingResponse."""
+        headers = self.get_headers(referer=referer, target_url=url)
+        # Using curl_cffi with browser impersonation to bypass TLS / CDN hotlink checks
+        res = requests.get(url, headers=headers, stream=True, impersonate="chrome124", timeout=30)
+        res.raise_for_status()
+        for chunk in res.iter_content(chunk_size=chunk_size):
+            if chunk:
+                yield chunk
+
+    def save_locally(
+        self,
+        url: str,
+        filename: str,
+        folder_prefix: str = "",
+        referer: Optional[str] = None
+    ) -> Tuple[str, int]:
+        """Download URL and save to local downloads directory."""
+        target_dir = os.path.join(self.download_dir, folder_prefix) if folder_prefix else self.download_dir
+        os.makedirs(target_dir, exist_ok=True)
+
+        safe_name = sanitize_filename(filename)
+        dest_path = os.path.join(target_dir, safe_name)
+
+        # Avoid overwriting
+        base_name, ext = os.path.splitext(safe_name)
+        counter = 1
+        while os.path.exists(dest_path):
+            dest_path = os.path.join(target_dir, f"{base_name}_{counter}{ext}")
+            counter += 1
+
+        headers = self.get_headers(referer=referer, target_url=url)
+        res = requests.get(url, headers=headers, stream=True, impersonate="chrome124", timeout=30)
+        res.raise_for_status()
+
+        total_bytes = 0
+        with open(dest_path, "wb") as f:
+            for chunk in res.iter_content(chunk_size=65536):
+                if chunk:
+                    f.write(chunk)
+                    total_bytes += len(chunk)
+
+        return dest_path, total_bytes
+
+    def create_images_zip(
+        self,
+        images_urls: List[str],
+        title: str,
+        referer: Optional[str] = None
+    ) -> io.BytesIO:
+        """Download images concurrently and compile them into an in-memory ZIP archive."""
+        zip_buffer = io.BytesIO()
+
+        def fetch_image(idx: int, img_url: str) -> Tuple[int, Optional[str], Optional[bytes]]:
+            try:
+                headers = self.get_headers(referer=referer, target_url=img_url)
+                r = requests.get(img_url, headers=headers, impersonate="chrome124", timeout=15)
+                if r.status_code == 200:
+                    ext = ".jpeg"
+                    content_type = r.headers.get("Content-Type", "")
+                    if "png" in content_type:
+                        ext = ".png"
+                    elif "webp" in content_type:
+                        ext = ".webp"
+                    return idx, ext, r.content
+            except Exception as e:
+                logger.warning(f"Failed to fetch image {idx} ({img_url}): {e}")
+            return idx, None, None
+
+        # Download up to 6 images in parallel
+        results = []
+        max_workers = min(6, max(len(images_urls), 1))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_idx = {
+                executor.submit(fetch_image, i, url): i
+                for i, url in enumerate(images_urls, 1)
+            }
+            for future in as_completed(future_to_idx):
+                results.append(future.result())
+
+        # Sort by original image index
+        results.sort(key=lambda x: x[0])
+
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            for idx, ext, content in results:
+                if ext and content:
+                    img_filename = f"image_{idx:02d}{ext}"
+                    zip_file.writestr(img_filename, content)
+
+        zip_buffer.seek(0)
+        return zip_buffer
+
+    def save_images_locally(
+        self,
+        images_urls: List[str],
+        album_name: str,
+        referer: Optional[str] = None
+    ) -> Tuple[str, int]:
+        """Download all images concurrently into a dedicated subfolder in the downloads directory."""
+        safe_album = sanitize_filename(album_name or "photo_album", max_len=45)
+        target_dir = os.path.join(self.download_dir, safe_album)
+        os.makedirs(target_dir, exist_ok=True)
+
+        total_saved = 0
+        def fetch_and_save(idx: int, img_url: str):
+            try:
+                headers = self.get_headers(referer=referer, target_url=img_url)
+                r = requests.get(img_url, headers=headers, impersonate="chrome124", timeout=15)
+                if r.status_code == 200:
+                    ext = ".jpeg"
+                    content_type = r.headers.get("Content-Type", "")
+                    if "png" in content_type:
+                        ext = ".png"
+                    elif "webp" in content_type:
+                        ext = ".webp"
+                    dest = os.path.join(target_dir, f"photo_{idx:02d}{ext}")
+                    with open(dest, "wb") as f:
+                        f.write(r.content)
+                    return len(r.content)
+            except Exception as e:
+                logger.warning(f"Error saving image {idx} locally: {e}")
+            return 0
+
+        max_workers = min(6, max(len(images_urls), 1))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(fetch_and_save, i, url)
+                for i, url in enumerate(images_urls, 1)
+            ]
+            for f in as_completed(futures):
+                total_saved += f.result()
+
+        return target_dir, total_saved

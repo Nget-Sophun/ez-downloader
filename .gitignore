@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# Local Environment & Secrets
+.env
+.env.local
+
+# Downloads directory
+downloads/
+*.mp4
+*.mp3
+*.zip
+*.jpg
+*.jpeg
+*.png
+*.webp
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
