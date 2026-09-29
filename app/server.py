@@ -284,7 +284,7 @@ async def stream_zip_by_token(token: str = Query(...)):
 
 
 @app.post("/api/download/slideshow-prepare")
-async def prepare_slideshow_download(req: SlideshowPrepareRequest):
+def prepare_slideshow_download(req: SlideshowPrepareRequest):
     """Store slideshow video parameters in a temporary token for direct download."""
     if not req.images:
         raise HTTPException(status_code=400, detail="No images provided for slideshow video.")
@@ -311,7 +311,7 @@ async def prepare_slideshow_download(req: SlideshowPrepareRequest):
 
 
 @app.get("/api/download/slideshow-stream")
-async def stream_slideshow_by_token(token: str = Query(...)):
+def stream_slideshow_by_token(token: str = Query(...)):
     """Render and stream MP4 slideshow video combining photo(s) and background audio."""
     entry = slideshow_token_cache.get(token)
     if not entry:

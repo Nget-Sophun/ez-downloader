@@ -255,18 +255,21 @@ class Downloader:
             scale_filter = "scale='if(gt(a,9/16),720,-2)':'if(gt(a,9/16),-2,1280)',pad=720:1280:(720-iw)/2:(1280-ih)/2:black"
 
             if len(valid_img_paths) == 1:
-                # Single photo: loop image for audio duration (or max 30s)
+                # Single photo: loop image for audio duration (capped to 15s for instant performance)
+                clip_duration = min(15.0, max_duration)
                 cmd = [
                     ffmpeg_exe, "-y",
                     "-threads", "2",
                     "-loop", "1",
+                    "-t", str(clip_duration),
+                    "-r", "20",
                     "-i", valid_img_paths[0]
                 ]
                 if audio_path:
-                    cmd.extend(["-i", audio_path])
+                    cmd.extend(["-t", str(clip_duration), "-i", audio_path])
                 else:
                     # Generate silent audio
-                    cmd.extend(["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"])
+                    cmd.extend(["-f", "lavfi", "-t", str(clip_duration), "-i", "anullsrc=r=44100:cl=stereo"])
 
                 cmd.extend([
                     "-c:v", "libx264",
@@ -277,8 +280,8 @@ class Downloader:
                     "-b:a", "128k",
                     "-pix_fmt", "yuv420p",
                     "-vf", scale_filter,
-                    "-shortest",
-                    "-t", str(min(30.0, max_duration)),
+                    "-r", "20",
+                    "-t", str(clip_duration),
                     output_mp4
                 ])
             else:
@@ -290,6 +293,9 @@ class Downloader:
                         f.write(f"duration {duration_per_image}\n")
                     f.write(f"file '{valid_img_paths[-1].replace(os.sep, '/')}'\n")
 
+                total_slides_duration = len(valid_img_paths) * duration_per_image
+                clip_duration = min(total_slides_duration, max_duration, 30.0)
+
                 cmd = [
                     ffmpeg_exe, "-y",
                     "-threads", "2",
@@ -298,12 +304,9 @@ class Downloader:
                     "-i", concat_file
                 ]
                 if audio_path:
-                    cmd.extend(["-i", audio_path])
+                    cmd.extend(["-t", str(clip_duration), "-i", audio_path])
                 else:
-                    cmd.extend(["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"])
-
-                total_slides_duration = len(valid_img_paths) * duration_per_image
-                clip_duration = min(total_slides_duration, max_duration)
+                    cmd.extend(["-f", "lavfi", "-t", str(clip_duration), "-i", "anullsrc=r=44100:cl=stereo"])
 
                 cmd.extend([
                     "-c:v", "libx264",
@@ -313,7 +316,7 @@ class Downloader:
                     "-b:a", "128k",
                     "-pix_fmt", "yuv420p",
                     "-vf", scale_filter,
-                    "-shortest",
+                    "-r", "20",
                     "-t", str(clip_duration),
                     output_mp4
                 ])
