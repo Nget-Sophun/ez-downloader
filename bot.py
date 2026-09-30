@@ -82,13 +82,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     welcome_text = (
         f"👋 <b>Welcome, {first_name}!</b>\n\n"
-        "⚡ <b>EZ-Downloader Bot</b> lets you download <b>TikTok</b> & <b>Douyin (抖音)</b> media without watermarks.\n\n"
+        "⚡ <b>EZ-Downloader Bot</b> lets you download <b>TikTok</b>, <b>Douyin (抖音)</b>, <b>Instagram</b>, <b>Facebook</b> & <b>YouTube</b> media in HD without watermarks.\n\n"
         "✨ <b>What I can download:</b>\n"
-        "• 🎬 <b>HD Videos</b> (Watermark-free, 1080p/HD)\n"
-        "• 📸 <b>Photo Slideshows</b> (All images in high resolution)\n"
-        "• 🎵 <b>Background Songs & Audio</b> (Direct MP3 track)\n\n"
+        "• 🎬 <b>HD Videos, Reels & Shorts</b> (TikTok, Douyin, Instagram, Facebook, YouTube)\n"
+        "• 📸 <b>Photo Slideshows & Albums</b> (High resolution images & carousels)\n"
+        "• 🎵 <b>Background Songs & Audio</b> (Direct MP3 track where available)\n\n"
         "📥 <b>How to use:</b>\n"
-        "1. Just <b>paste any TikTok or Douyin link</b> here in the chat!\n"
+        "1. Just <b>paste any TikTok, Douyin, Instagram, Facebook, or YouTube link</b> here in the chat!\n"
         "2. Or click the button below to use the <b>Web App</b> interface."
     )
 
@@ -104,10 +104,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
         "💡 <b>EZ-Downloader Help</b>\n\n"
         "<b>Supported Links:</b>\n"
-        "• TikTok: <code>https://www.tiktok.com/@user/video/...</code>\n"
-        "• TikTok Photos: <code>https://www.tiktok.com/@user/photo/...</code>\n"
-        "• Short links: <code>https://vt.tiktok.com/...</code> or <code>vm.tiktok.com/...</code>\n"
-        "• Douyin: <code>https://v.douyin.com/...</code> or <code>https://www.douyin.com/video/...</code>\n\n"
+        "• <b>YouTube:</b> <code>https://www.youtube.com/watch?v=...</code> or <code>https://youtu.be/...</code> or <code>https://www.youtube.com/shorts/...</code>\n"
+        "• <b>TikTok:</b> <code>https://www.tiktok.com/@user/video/...</code> or <code>https://vt.tiktok.com/...</code>\n"
+        "• <b>Douyin:</b> <code>https://v.douyin.com/...</code> or <code>https://www.douyin.com/video/...</code>\n"
+        "• <b>Instagram:</b> <code>https://www.instagram.com/reel/...</code> or <code>https://www.instagram.com/p/...</code>\n"
+        "• <b>Facebook:</b> <code>https://www.facebook.com/reel/...</code> or <code>https://fb.watch/...</code>\n\n"
         "Simply send or forward the link to this chat!"
     )
     await update.message.reply_text(
@@ -118,11 +119,19 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def extract_url_from_text(text: str) -> Optional[str]:
-    """Find the first TikTok or Douyin URL in a message text."""
+    """Find the first supported media URL in a message text."""
     url_pattern = r"(https?://[^\s]+)"
     matches = re.findall(url_pattern, text)
+    supported_domains = [
+        "tiktok.com", "tiktokv.com",
+        "douyin.com", "iesdouyin.com",
+        "instagram.com", "instagr.am",
+        "facebook.com", "fb.watch", "fb.gg", "fb.com",
+        "youtube.com", "youtu.be"
+    ]
     for m in matches:
-        if any(domain in m for domain in ["tiktok.com", "douyin.com", "iesdouyin.com"]):
+        m_lower = m.lower()
+        if any(domain in m_lower for domain in supported_domains):
             return m.strip("()[]<>.,!\"'")
     return None
 
@@ -134,7 +143,14 @@ async def send_media_to_chat(
     target_url: Optional[str] = None
 ) -> None:
     """Forward analyzed media (video or photo album + audio) directly to a Telegram chat."""
-    platform_label = "Douyin (抖音)" if media.platform == "douyin" else "TikTok"
+    platform_map = {
+        "douyin": "Douyin (抖音)",
+        "tiktok": "TikTok",
+        "instagram": "Instagram",
+        "facebook": "Facebook",
+        "youtube": "YouTube"
+    }
+    platform_label = platform_map.get(media.platform, media.platform.title())
     author_name = media.author.nickname or "Creator"
     title_text = media.title or "No title"
     if len(title_text) > 100:
@@ -298,8 +314,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not target_url:
         # Not a valid link
         await update.message.reply_text(
-            "⚠️ Please send a valid <b>TikTok</b> or <b>Douyin (抖音)</b> link.\n"
-            "Example: <code>https://vt.tiktok.com/...</code> or <code>https://www.tiktok.com/@user/photo/...</code>",
+            "⚠️ Please send a valid <b>TikTok</b>, <b>Douyin (抖音)</b>, <b>Instagram</b>, <b>Facebook</b>, or <b>YouTube</b> link.\n"
+            "Example: <code>https://www.youtube.com/watch?v=...</code>, <code>https://www.instagram.com/reel/...</code> or <code>https://fb.watch/...</code>",
             parse_mode=constants.ParseMode.HTML
         )
         return

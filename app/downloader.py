@@ -45,6 +45,12 @@ class Downloader:
                 headers["Referer"] = "https://www.tiktok.com/"
             elif any(d in target_url for d in ["douyin", "snssdk", "zijieapi"]):
                 headers["Referer"] = "https://www.douyin.com/"
+            elif any(d in target_url for d in ["instagram", "cdninstagram"]):
+                headers["Referer"] = "https://www.instagram.com/"
+            elif any(d in target_url for d in ["facebook", "fbcdn", "fbsbx"]):
+                headers["Referer"] = "https://www.facebook.com/"
+            elif any(d in target_url for d in ["youtube", "googlevideo", "ytimg", "youtu.be"]):
+                headers["Referer"] = "https://www.youtube.com/"
         return headers
 
     def stream_remote_file(self, url: str, referer: Optional[str] = None, chunk_size: int = 65536) -> Generator[bytes, None, None]:

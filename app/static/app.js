@@ -138,7 +138,7 @@ document.addEventListener("DOMContentLoaded", () => {
     btnSendToChat.addEventListener("click", async () => {
       const activeUrl = urlInput.value.trim();
       if (!activeUrl) {
-        showToast("Please enter a TikTok or Douyin link first.", "warning");
+        showToast("Please enter a YouTube, TikTok, Douyin, Instagram, or Facebook link first.", "warning");
         return;
       }
 
@@ -297,14 +297,36 @@ document.addEventListener("DOMContentLoaded", () => {
     resultContainer.classList.remove("hidden");
 
     // Platform Badge
-    const isDouyin = media.platform === "douyin";
-    platformBadge.textContent = isDouyin ? "Douyin (抖音)" : "TikTok";
-    platformBadge.className = isDouyin
-      ? "text-[10px] font-bold px-2 py-0.5 rounded-full badge-douyin"
-      : "text-[10px] font-bold px-2 py-0.5 rounded-full badge-tiktok";
+    const platform = (media.platform || "").toLowerCase();
+    let badgeText = "TikTok";
+    let badgeClass = "badge-tiktok";
+
+    if (platform === "douyin") {
+      badgeText = "Douyin (抖音)";
+      badgeClass = "badge-douyin";
+    } else if (platform === "instagram") {
+      badgeText = "Instagram";
+      badgeClass = "badge-instagram";
+    } else if (platform === "facebook") {
+      badgeText = "Facebook";
+      badgeClass = "badge-facebook";
+    } else if (platform === "youtube") {
+      badgeText = "YouTube";
+      badgeClass = "badge-youtube";
+    }
+
+    platformBadge.textContent = badgeText;
+    platformBadge.className = `text-[10px] font-bold px-2 py-0.5 rounded-full ${badgeClass}`;
 
     // Author
-    authorNickname.textContent = media.author.nickname || (isDouyin ? "Douyin User" : "TikTok User");
+    let defaultAuthor = "Creator";
+    if (platform === "douyin") defaultAuthor = "Douyin User";
+    else if (platform === "tiktok") defaultAuthor = "TikTok User";
+    else if (platform === "instagram") defaultAuthor = "Instagram User";
+    else if (platform === "facebook") defaultAuthor = "Facebook Creator";
+    else if (platform === "youtube") defaultAuthor = "YouTube Creator";
+
+    authorNickname.textContent = media.author.nickname || defaultAuthor;
     authorHandle.textContent = media.author.unique_id ? `@${media.author.unique_id}` : "";
     authorAvatar.src = media.author.avatar || "/static/avatar_default.svg";
     authorAvatar.onerror = () => { authorAvatar.src = "/static/avatar_default.svg"; };
@@ -677,7 +699,8 @@ document.addEventListener("DOMContentLoaded", () => {
   function showError(msg) {
     errorMessage.textContent = msg;
     errorAlert.classList.remove("hidden");
-    if (msg.toLowerCase().includes("douyin") || msg.toLowerCase().includes("cookie")) {
+    const low = msg.toLowerCase();
+    if (low.includes("douyin") || low.includes("cookie") || low.includes("instagram") || low.includes("facebook") || low.includes("sessionid")) {
       btnErrorCookieHelp.classList.remove("hidden");
     } else {
       btnErrorCookieHelp.classList.add("hidden");

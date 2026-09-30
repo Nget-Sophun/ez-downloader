@@ -71,8 +71,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="EZ Downloader - TikTok & Douyin",
-    version="1.1.0",
+    title="EZ Downloader - TikTok, Douyin, Instagram, Facebook & YouTube",
+    version="1.3.0",
     lifespan=lifespan
 )
 
@@ -147,7 +147,7 @@ async def serve_index():
 @app.post("/api/analyze")
 async def analyze_url(req: AnalyzeRequest):
     if not req.url or not req.url.strip():
-        raise HTTPException(status_code=400, detail="Please enter a TikTok or Douyin URL.")
+        raise HTTPException(status_code=400, detail="Please enter a TikTok, Douyin, Instagram, Facebook, or YouTube URL.")
 
     try:
         result = extractor.fetch(req.url, custom_cookie=req.cookie)

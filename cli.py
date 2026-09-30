@@ -21,9 +21,9 @@ from app.downloader import Downloader, sanitize_filename, DEFAULT_DOWNLOAD_DIR
 
 def main():
     parser = argparse.ArgumentParser(
-        description="EZ-Downloader CLI - Download TikTok & Douyin (抖音) videos, music, and photo albums."
+        description="EZ-Downloader CLI - Download TikTok, Douyin, Instagram, Facebook & YouTube videos, music, and photo albums."
     )
-    parser.add_argument("url", help="TikTok or Douyin video/photo URL or copied share text")
+    parser.add_argument("url", help="TikTok, Douyin, Instagram, Facebook, or YouTube video/photo URL or copied share text")
     parser.add_argument(
         "--type",
         choices=["video", "audio", "images", "all"],
@@ -38,13 +38,13 @@ def main():
     parser.add_argument(
         "--cookie",
         default=None,
-        help="Custom browser cookie string (optional, recommended for Douyin restricted videos)"
+        help="Custom browser cookie string (optional, recommended for restricted Douyin, Instagram, Facebook, or YouTube posts)"
     )
 
     args = parser.parse_args()
 
     print("\n" + "=" * 60)
-    print("  EZ-Downloader CLI (TikTok & Douyin)")
+    print("  EZ-Downloader CLI (TikTok, Douyin, Instagram, Facebook & YouTube)")
     print("=" * 60)
 
     extractor = UnifiedExtractor()
@@ -63,7 +63,14 @@ def main():
     print(f"[+] Type     : {media.type.upper()}")
 
     safe_title = sanitize_filename(media.title or media.id)
-    folder_prefix = "Douyin" if media.platform == "douyin" else "TikTok"
+    folder_map = {
+        "douyin": "Douyin",
+        "tiktok": "TikTok",
+        "instagram": "Instagram",
+        "facebook": "Facebook",
+        "youtube": "YouTube"
+    }
+    folder_prefix = folder_map.get(media.platform, media.platform.title())
 
     # If media is photo post and user kept default type, download both images and audio!
     is_photo_post = media.type == "photo"

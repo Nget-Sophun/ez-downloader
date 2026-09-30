@@ -66,6 +66,21 @@ body {
   color: #fff;
 }
 
+.badge-instagram {
+  background: linear-gradient(135deg, #833ab4 0%, #fd1d1d 50%, #fcb045 100%);
+  color: #fff;
+}
+
+.badge-facebook {
+  background: linear-gradient(135deg, #1877f2 0%, #0056b3 100%);
+  color: #fff;
+}
+
+.badge-youtube {
+  background: linear-gradient(135deg, #ff0000 0%, #b30000 100%);
+  color: #fff;
+}
+
 /* Custom Scrollbar */
 ::-webkit-scrollbar {
   width: 8px;
